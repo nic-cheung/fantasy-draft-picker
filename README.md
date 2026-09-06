@@ -50,14 +50,24 @@ it happens - yours and everyone else's.
 python -m draft_picker.cli --manual
 ```
 
-At each prompt, type part of a player's name to record that pick, `paste` to
-enter several picks at once (paste multiple lines - a full copied Pick
-History row works fine, extra text is ignored - then an empty line to
-finish), `undo` to remove the last entry (typo recovery), or `quit` to stop.
-Multiple name matches show a disambiguation list instead of silently
-guessing. Paste picks oldest-first; if a line can't be matched unambiguously,
-paste stops right there and tells you which line, so pick numbering (and
-therefore team attribution) never drifts.
+At each prompt, type part of a player's name to record a single pick, or
+just **paste directly** - no need to type anything first. A multi-line
+paste is auto-detected and treated as a batch. You can paste literally
+anything from the draft page: a Round table, the Picks sidebar, or the
+whole page at once - every line is scanned for a real player's full name
+and everything else (headers, stats, roster sidebar, autopick text) is
+ignored, so there's no assumption about ESPN's exact layout. `undo` removes
+the last single entry, `quit` stops. (If pasting into a non-interactive
+terminal where auto-detection doesn't apply, type `paste`, paste your
+content, then `END` on its own line.)
+
+It's safe - and expected - to paste the same or a growing block of the
+draft history repeatedly (e.g. "select-all the Pick History panel from
+pick 1" every so often): already-recorded picks are recognized and
+skipped automatically, only genuinely new ones get added, and duplicate
+rows of the same pick within one paste (a page dump naturally contains
+the same pick more than once) collapse the same way. A line that names
+more than one player is skipped with a warning rather than guessed at.
 
 ### Testing against a practice/mock draft
 

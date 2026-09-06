@@ -1,4 +1,5 @@
 import argparse
+import select
 import sys
 import time
 from collections import Counter
@@ -199,15 +200,103 @@ def _run_simulation(console: Console, cfg, league, pool, position_slot_counts, t
 
 
 def _find_matches(query: str, available) -> list:
-    """Bidirectional containment match: works for a short typed fragment
-    ("mccaffrey") AND a full noisy line copied straight out of ESPN's Pick
-    History panel ("Rd 3, Pick 6 - Team Bob - Christian McCaffrey RB SF"),
-    since in the second case the player's full name is a substring of the
-    query rather than the other way round."""
+    """Bidirectional containment match for a single typed entry: works for a
+    short fragment ("mccaffrey") and for a full name pasted as one line."""
     query = query.lower().strip()
     if not query:
         return []
     return [p for p in available if query in p.name.lower() or p.name.lower() in query]
+
+
+def _has_buffered_input() -> bool:
+    """True if more input is already sitting in stdin's buffer, ready to read
+    without blocking - the signal that the line just read was one line of a
+    multi-line paste, not something the user typed and pressed Enter on.
+    Only meaningful for a real interactive terminal (a paste delivers many
+    lines to the tty's buffer near-instantly); for piped/non-tty input this
+    always returns False, since there every line looks "already buffered"
+    whether or not it came from an actual paste."""
+    try:
+        if not sys.stdin.isatty():
+            return False
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        return bool(ready)
+    except (OSError, ValueError):
+        return False
+
+
+def _apply_pasted_blob(text: str, pool, picks: list, drafted_ids: set, team_count: int, cfg, console: Console) -> None:
+    """Record picks from a raw paste of (part of) the ESPN draft page.
+
+    Deliberately doesn't assume any particular layout - a real copy of
+    ESPN's Round table is one FIELD per line (pick number, blank injury
+    slot, player name, NFL team, position, fantasy team name, points,
+    rank, ...), not one pick per line, and is full of blank lines that
+    would end naive "blank line means done" collection almost immediately.
+
+    So instead of parsing structure, every line is scanned for a real
+    player's full name - true whether that name sits alone on its own line
+    (the Round table) or inline ("Josh Allen / BUF QB" in the Picks
+    sidebar). Everything else (headers, stats, roster sidebar, autopick
+    text) is just ignored rather than treated as an error.
+
+    Matching against the FULL pool (not just available) and skipping any
+    hit that's already drafted makes this idempotent - pasting the whole
+    draft history again from pick 1 only adds what's new, so "periodically
+    paste everything from the top" works as a repeatable action rather
+    than needing to track where the last paste left off. Duplicate rows of
+    the same pick showing up more than once in one paste (e.g. a Round
+    table row and a Picks-sidebar entry for the same pick) collapse the
+    same way, since the first occurrence marks it drafted before the
+    second is reached.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    full_pool = list(pool.values())
+    new_count = 0
+    already_count = 0
+    ignored_count = 0
+
+    for line in lines:
+        line_lower = line.lower()
+        hits = [p for p in full_pool if p.name.lower() in line_lower]
+        if not hits:
+            ignored_count += 1
+            continue
+        if len(hits) > 1:
+            # e.g. both "Michael Pittman" and "Michael Pittman Jr." appear in
+            # the line - the longer (more specific) one wins if that's unique,
+            # otherwise it's a genuine ambiguity, so skip just this line.
+            hits.sort(key=lambda p: len(p.name), reverse=True)
+            tied = [c for c in hits if len(c.name) == len(hits[0].name)]
+            if len(tied) > 1:
+                console.print(f"[yellow]Skipped ambiguous line (matches {', '.join(c.name for c in tied)}): '{line}'[/yellow]")
+                continue
+        chosen = hits[0]
+
+        if chosen.player_id in drafted_ids:
+            already_count += 1
+            continue
+
+        cur_pick_number = len(picks) + 1
+        cur_slot = slot_for_pick_number(cur_pick_number, team_count)
+        cur_team_name = cfg.my_team_name if cur_slot == cfg.my_draft_position else f"Team {cur_slot}"
+        drafted_ids.add(chosen.player_id)
+        picks.append(
+            espn_client.PickRow(
+                pick_number=cur_pick_number,
+                round_num=(cur_pick_number - 1) // team_count + 1,
+                round_pick=cur_slot,
+                team_name=cur_team_name,
+                player_name=chosen.name,
+                player_id=chosen.player_id,
+            )
+        )
+        new_count += 1
+
+    console.print(
+        f"[green]{new_count} new pick(s) recorded[/green], {already_count} already known, "
+        f"{ignored_count} line(s) ignored (no player name found)."
+    )
 
 
 def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count, roster_size, my_pick_numbers, positions, pool):
@@ -219,18 +308,20 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
     API-based path to "who's been drafted" during an in-progress draft.
     This sidesteps ESPN's draft endpoint entirely: real pool/projections/
     settings (all fetched once, pre-draft, which does work), but pick data
-    comes from you watching the real draft screen and typing each pick in.
+    comes from you watching the real draft screen and entering picks in -
+    one at a time, or by pasting a chunk of the actual draft page.
     """
     picks: List = []
     drafted_ids = set()
 
     console.print(
         "\n[bold]Manual live tracking[/bold] - nothing is read from or sent to ESPN's draft "
-        "endpoint. Watch the real draft screen and enter each pick (yours and everyone "
-        "else's) as it happens.\n"
-        "At each prompt: type part of a player's name to record that pick, 'paste' to enter "
-        "several picks at once (e.g. copied from ESPN's Pick History panel, oldest pick "
-        "first), 'undo' to remove the last entry (typo recovery), or 'quit' to stop.\n"
+        "endpoint. Watch the real draft screen and enter picks (yours and everyone else's) "
+        "as they happen.\n"
+        "Type part of a player's name for a single pick, or just paste a chunk of the "
+        "draft page directly (any of it - a Round table, the Picks sidebar, the whole "
+        "page - noise is ignored, and it's safe to paste the same or a growing block "
+        "repeatedly). 'undo' removes the last entry, 'quit' stops.\n"
     )
 
     total_picks = roster_size * team_count
@@ -256,7 +347,27 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
         team_name = cfg.my_team_name if is_mine else f"Team {slot}"
         on_clock = "[bold green]YOUR PICK[/bold green]" if is_mine else team_name
 
-        query = console.input(f"\n[Pick #{pick_number}] {on_clock} just took > ").strip()
+        first_line = console.input(f"\n[Pick #{pick_number}] {on_clock} just took (or paste) > ")
+
+        # A real paste delivers every line to the terminal at once, so right
+        # after reading the first one, the rest are already sitting in
+        # stdin's buffer ready to read with no further waiting - that's the
+        # signal this was a paste, not something typed and Entered on
+        # purpose. Blank lines are legitimate paste content (ESPN's own
+        # copyable text is full of them), so this - not "stop at a blank
+        # line" - is what decides where the paste ends.
+        lines = [first_line]
+        while _has_buffered_input():
+            lines.append(console.input(""))
+
+        if len(lines) > 1:
+            _apply_pasted_blob("\n".join(lines), pool, picks, drafted_ids, team_count, cfg, console)
+            console.input("Press Enter to continue...")
+            continue
+
+        query = first_line.strip()
+        if not query:
+            continue
         if query.lower() in ("quit", "q", "exit"):
             break
 
@@ -271,94 +382,19 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
             continue
 
         if query.lower() == "paste":
+            # Explicit fallback for non-tty/piped input, or if auto-detection
+            # above ever misses a paste - collect lines until an explicit
+            # sentinel, since a blank line can't be used as one here.
             console.print(
-                "[bold]Paste the draft history now, oldest pick first, one per line "
-                "(a full Pick History row is fine, extra text is ignored). Pasting the "
-                "whole history again later is fine too - already-recorded picks are "
-                "skipped automatically.[/bold]\n"
-                "Press Enter on an empty line when done."
+                "[bold]Paste now, then type END on its own line when done.[/bold]"
             )
             pasted_lines = []
             while True:
-                line = console.input("").strip()
-                if not line:
+                line = console.input("")
+                if line.strip().upper() == "END":
                     break
                 pasted_lines.append(line)
-
-            full_pool = list(pool.values())
-            new_count = 0
-            already_count = 0
-            for line in pasted_lines:
-                line_lower = line.lower()
-
-                # Match against the FULL pool (drafted or not) - the same block gets
-                # re-pasted from pick 1 every time, so a line for an already-recorded
-                # pick must still resolve (to be recognized and skipped), not fail just
-                # because that player's no longer "available".
-                #
-                # Prefer a player whose FULL name literally appears in the line - the
-                # expected case for a noisy Pick History row. Only fall back to a short
-                # typed-fragment match (line is a substring of the name) when no full
-                # name is present, so a bare fragment like "Josh" matching two different
-                # full names (Allen vs Jacobs) is correctly flagged as ambiguous rather
-                # than silently resolved by name length.
-                name_in_line = [p for p in full_pool if p.name.lower() in line_lower]
-                if len(name_in_line) == 1:
-                    chosen = name_in_line[0]
-                elif len(name_in_line) > 1:
-                    # e.g. both "Michael Pittman" and "Michael Pittman Jr." appear in
-                    # the line - the longer (more specific) one wins if it's unique.
-                    name_in_line.sort(key=lambda p: len(p.name), reverse=True)
-                    tied = [c for c in name_in_line if len(c.name) == len(name_in_line[0].name)]
-                    if len(tied) > 1:
-                        console.print(f"[red]Stopped at line {new_count + already_count + 1}: '{line}' matches multiple players:[/red]")
-                        for c in name_in_line[:8]:
-                            console.print(f"  {c.name} ({c.position}, {c.pro_team})")
-                        break
-                    chosen = name_in_line[0]
-                else:
-                    fragment_matches = [p for p in full_pool if line_lower and line_lower in p.name.lower()]
-                    if not fragment_matches:
-                        console.print(f"[red]Stopped at line {new_count + already_count + 1}: no player found in '{line}'.[/red]")
-                        break
-                    if len(fragment_matches) > 1:
-                        console.print(f"[red]Stopped at line {new_count + already_count + 1}: '{line}' matches multiple players:[/red]")
-                        for c in fragment_matches[:8]:
-                            console.print(f"  {c.name} ({c.position}, {c.pro_team})")
-                        break
-                    chosen = fragment_matches[0]
-
-                if chosen.player_id in drafted_ids:
-                    already_count += 1
-                    continue
-
-                cur_pick_number = len(picks) + 1
-                cur_slot = slot_for_pick_number(cur_pick_number, team_count)
-                cur_team_name = cfg.my_team_name if cur_slot == cfg.my_draft_position else f"Team {cur_slot}"
-                drafted_ids.add(chosen.player_id)
-                picks.append(
-                    espn_client.PickRow(
-                        pick_number=cur_pick_number,
-                        round_num=(cur_pick_number - 1) // team_count + 1,
-                        round_pick=cur_slot,
-                        team_name=cur_team_name,
-                        player_name=chosen.name,
-                        player_id=chosen.player_id,
-                    )
-                )
-                new_count += 1
-
-            unresolved = len(pasted_lines) - new_count - already_count
-            console.print(
-                f"[green]{new_count} new pick(s) recorded[/green]"
-                f"{f', {already_count} already recorded (skipped)' if already_count else ''}"
-                f"{f', stopped with {unresolved} line(s) unprocessed' if unresolved else ''}."
-            )
-            if unresolved:
-                console.print(
-                    "[yellow]Fix the name above then re-paste (the whole history is fine, "
-                    "or just the remainder) - pick numbering picks up correctly either way.[/yellow]"
-                )
+            _apply_pasted_blob("\n".join(pasted_lines), pool, picks, drafted_ids, team_count, cfg, console)
             console.input("Press Enter to continue...")
             continue
 
