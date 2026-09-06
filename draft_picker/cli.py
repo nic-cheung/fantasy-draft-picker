@@ -355,6 +355,14 @@ def _review_and_apply_paste(text: str, pool, picks: list, drafted_ids: set, team
         preview_team = cfg.my_team_name if preview_slot == cfg.my_draft_position else f"Team {preview_slot}"
         console.print(f"  #{preview_pick_number} {preview_team}: {p.name} ({p.position}, {p.pro_team})")
 
+    # Belt-and-suspenders: whatever the reason (a large paste arriving in
+    # chunks, or anything else), make absolutely sure nothing stray is
+    # sitting in the input buffer before reading the confirmation - this is
+    # the one prompt where misreading leftover input for the answer would
+    # be actively dangerous (a real "Y" silently read as "no").
+    while _has_buffered_input():
+        console.input("")
+
     confirm = console.input("Record these? [Y/n] ").strip().lower()
     if confirm in ("", "y", "yes"):
         _commit_planned_picks(new_players, picks, drafted_ids, team_count, cfg)
@@ -420,9 +428,23 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
         # purpose. Blank lines are legitimate paste content (ESPN's own
         # copyable text is full of them), so this - not "stop at a blank
         # line" - is what decides where the paste ends.
+        #
+        # A large (whole-page) paste can arrive to the tty in more than one
+        # chunk with a tiny gap between them, so a single "nothing buffered
+        # right now" check can fire in that gap and cut the paste short -
+        # confirmed live, it did, and the leftover tail then sat unread in
+        # the buffer and got consumed by the NEXT prompt instead (the
+        # confirmation below), silently flipping a typed "Y" into "no
+        # input read yet, whatever came next wins". A couple of short
+        # retries closes that gap.
         lines = [first_line]
-        while _has_buffered_input():
-            lines.append(console.input(""))
+        while True:
+            if _has_buffered_input():
+                lines.append(console.input(""))
+                continue
+            time.sleep(0.05)
+            if not _has_buffered_input():
+                break
 
         if len(lines) > 1:
             _review_and_apply_paste("\n".join(lines), pool, picks, drafted_ids, team_count, cfg, console)
