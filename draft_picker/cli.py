@@ -170,7 +170,7 @@ def _run_simulation(console: Console, cfg, league, pool, position_slot_counts, t
         team_name = cfg.my_team_name if slot == cfg.my_draft_position else f"Team {slot}"
 
         query = console.input(f"\n[Pick #{pick_number}] {team_name} on the clock > ").strip()
-        if query.lower() in ("quit", "q", "exit"):
+        if query.lower() in ("quit", "exit"):
             break
 
         if query.lower() == "top":
@@ -397,7 +397,14 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
         query = console.input(f"\n[Pick #{pick_number}] {on_clock} just took > ").strip()
         if not query:
             continue
-        if query.lower() in ("quit", "q", "exit"):
+        # Deliberately not accepting a bare "q" here (unlike a typical CLI
+        # convention) - confirmed live: ESPN's own "Questionable" injury
+        # flag renders as a standalone "Q" line, and pasting real draft
+        # content directly at this single-entry prompt (instead of via
+        # 'paste' ... 'END') fed it in as one line at a time, so a bare
+        # "q" quit alias ended the whole session mid-paste on a player's
+        # injury status, not a real command.
+        if query.lower() in ("quit", "exit"):
             break
 
         if query.lower() == "undo":
