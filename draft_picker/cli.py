@@ -25,6 +25,14 @@ def snake_pick_numbers(my_slot: int, team_count: int, rounds: int) -> List[int]:
     return numbers
 
 
+def slot_for_pick_number(pick_number: int, team_count: int) -> int:
+    round_num = (pick_number - 1) // team_count + 1
+    position_in_round = (pick_number - 1) % team_count + 1
+    if round_num % 2 == 1:
+        return position_in_round
+    return team_count - position_in_round + 1
+
+
 def render_header(console_width: int, picks, my_pick_numbers: List[int]) -> Panel:
     next_pick_number = len(picks) + 1
     upcoming = [n for n in my_pick_numbers if n >= next_pick_number]
@@ -105,9 +113,79 @@ def render_my_picks(picks, my_team_name: str) -> Table:
     return table
 
 
+def _run_simulation(console: Console, cfg, league, pool, position_slot_counts, team_count, roster_size, my_pick_numbers, positions):
+    """Local, in-memory mock draft.
+
+    Doesn't touch ESPN's draft state at all - real settings/projections come
+    from your actual league, but picks are typed in here and never sent
+    anywhere. Good for rehearsing scenarios (e.g. "what if 3 QBs go in the
+    first 5 picks") before the real thing.
+    """
+    sim_picks = []
+    drafted_ids = set()
+
+    console.print(
+        "\n[bold]Simulation mode[/bold] - nothing here touches your real league's draft.\n"
+        "At each prompt: type part of a player's name to draft them, 'top' to auto-pick "
+        "the current best-available player, or 'quit' to stop.\n"
+    )
+
+    total_picks = roster_size * team_count
+    while len(sim_picks) < total_picks:
+        available = [p for p in pool.values() if p.player_id not in drafted_ids]
+        ranked = rank_available_players(available, position_slot_counts, team_count)
+
+        console.print(
+            Group(
+                render_header(console.width, sim_picks, my_pick_numbers),
+                render_top_table(ranked, cfg.top_n),
+                render_position_table(ranked, positions),
+                render_recent_picks(sim_picks),
+                render_my_picks(sim_picks, cfg.my_team_name),
+            )
+        )
+
+        pick_number = len(sim_picks) + 1
+        slot = slot_for_pick_number(pick_number, team_count)
+        team_name = cfg.my_team_name if slot == cfg.my_draft_position else f"Team {slot}"
+
+        query = console.input(f"\n[Pick #{pick_number}] {team_name} on the clock > ").strip()
+        if query.lower() in ("quit", "q", "exit"):
+            break
+
+        if query.lower() == "top":
+            chosen = ranked[0].player
+        else:
+            matches = [p for p in available if query.lower() in p.name.lower()]
+            if not matches:
+                console.print(f"[red]No available player matches '{query}' - try again.[/red]\n")
+                continue
+            chosen = matches[0]
+
+        drafted_ids.add(chosen.player_id)
+        sim_picks.append(
+            espn_client.PickRow(
+                pick_number=pick_number,
+                round_num=(pick_number - 1) // team_count + 1,
+                round_pick=slot,
+                team_name=team_name,
+                player_name=chosen.name,
+                player_id=chosen.player_id,
+            )
+        )
+        console.clear()
+
+    console.print("\nSimulation ended.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Live ESPN fantasy draft best-available assistant")
     parser.add_argument("--once", action="store_true", help="print a single snapshot and exit")
+    parser.add_argument(
+        "--simulate",
+        action="store_true",
+        help="rehearse with a local mock draft (real league settings/projections, fake picks - nothing is sent to ESPN)",
+    )
     args = parser.parse_args()
 
     console = Console()
@@ -126,6 +204,10 @@ def main():
 
     my_pick_numbers = snake_pick_numbers(cfg.my_draft_position, team_count, roster_size)
     positions = ["QB", "RB", "WR", "TE", "D/ST"]
+
+    if args.simulate:
+        _run_simulation(console, cfg, league, pool, position_slot_counts, team_count, roster_size, my_pick_numbers, positions)
+        return
 
     def build_view():
         picks = espn_client.refresh_draft_picks(league)
