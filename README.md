@@ -50,18 +50,23 @@ it happens - yours and everyone else's.
 python -m draft_picker.cli --manual
 ```
 
-At each prompt, type part of a player's name to record a single pick, or
-just **paste directly** - no need to type anything first. A multi-line
-paste is auto-detected and treated as a batch. You can paste literally
-anything from the draft page: a Round table, the Picks sidebar, or the
-whole page at once - every line is scanned for a real player's full name
-and everything else (headers, stats, roster sidebar) is ignored, so
-there's no assumption about ESPN's exact layout. The "You are on the
-clock!" autopick suggestion is specifically filtered out too, since it
-names a real player who hasn't actually been picked yet. `undo` removes
-the last single entry, `quit` stops. (If pasting into a non-interactive
-terminal where auto-detection doesn't apply, type `paste`, paste your
-content, then `END` on its own line.)
+At each prompt, type part of a player's name to record a single pick.
+To paste a chunk of the draft page instead, type `paste`, paste your
+content, then `END` on its own line. You can paste literally anything
+from the draft page: a Round table, the Picks sidebar, or the whole page
+at once - every line is scanned for a real player's full name and
+everything else (headers, stats, roster sidebar) is ignored, so there's
+no assumption about ESPN's exact layout. The "You are on the clock!"
+autopick suggestion is specifically filtered out too, since it names a
+real player who hasn't actually been picked yet. `undo` removes the last
+single entry, `quit` stops.
+
+(An earlier version tried to auto-detect a paste without needing to type
+`paste` first, by checking whether more input was already buffered. That
+turned out to be unreliable - Python's own stdin buffering can already
+have slurped a large paste into a buffer that check can't see, causing it
+to think the paste was done early. The explicit `paste` ... `END` sentinel
+doesn't have that problem, so that's the only way now.)
 
 Before anything from a paste is written, it shows exactly which new picks
 it found - name, and which team each would be attributed to - and asks

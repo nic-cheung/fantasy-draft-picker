@@ -1,5 +1,4 @@
 import argparse
-import select
 import sys
 import time
 from collections import Counter
@@ -208,23 +207,6 @@ def _find_matches(query: str, available) -> list:
     return [p for p in available if query in p.name.lower() or p.name.lower() in query]
 
 
-def _has_buffered_input() -> bool:
-    """True if more input is already sitting in stdin's buffer, ready to read
-    without blocking - the signal that the line just read was one line of a
-    multi-line paste, not something the user typed and pressed Enter on.
-    Only meaningful for a real interactive terminal (a paste delivers many
-    lines to the tty's buffer near-instantly); for piped/non-tty input this
-    always returns False, since there every line looks "already buffered"
-    whether or not it came from an actual paste."""
-    try:
-        if not sys.stdin.isatty():
-            return False
-        ready, _, _ = select.select([sys.stdin], [], [], 0)
-        return bool(ready)
-    except (OSError, ValueError):
-        return False
-
-
 def _plan_pasted_blob(text: str, pool, drafted_ids: set, console: Console) -> tuple:
     """Scan a raw paste of (part of) the ESPN draft page and work out which
     picks it would add, WITHOUT touching any draft state - see
@@ -355,14 +337,6 @@ def _review_and_apply_paste(text: str, pool, picks: list, drafted_ids: set, team
         preview_team = cfg.my_team_name if preview_slot == cfg.my_draft_position else f"Team {preview_slot}"
         console.print(f"  #{preview_pick_number} {preview_team}: {p.name} ({p.position}, {p.pro_team})")
 
-    # Belt-and-suspenders: whatever the reason (a large paste arriving in
-    # chunks, or anything else), make absolutely sure nothing stray is
-    # sitting in the input buffer before reading the confirmation - this is
-    # the one prompt where misreading leftover input for the answer would
-    # be actively dangerous (a real "Y" silently read as "no").
-    while _has_buffered_input():
-        console.input("")
-
     confirm = console.input("Record these? [Y/n] ").strip().lower()
     if confirm in ("", "y", "yes"):
         _commit_planned_picks(new_players, picks, drafted_ids, team_count, cfg)
@@ -390,10 +364,11 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
         "\n[bold]Manual live tracking[/bold] - nothing is read from or sent to ESPN's draft "
         "endpoint. Watch the real draft screen and enter picks (yours and everyone else's) "
         "as they happen.\n"
-        "Type part of a player's name for a single pick, or just paste a chunk of the "
-        "draft page directly (any of it - a Round table, the Picks sidebar, the whole "
-        "page - noise is ignored, and it's safe to paste the same or a growing block "
-        "repeatedly). 'undo' removes the last entry, 'quit' stops.\n"
+        "Type part of a player's name for a single pick. To paste a chunk of the draft "
+        "page (any of it - a Round table, the Picks sidebar, the whole page - noise is "
+        "ignored, and it's safe to paste the same or a growing block repeatedly), type "
+        "'paste', paste your content, then 'END' on its own line. 'undo' removes the "
+        "last entry, 'quit' stops.\n"
     )
 
     total_picks = roster_size * team_count
@@ -419,39 +394,7 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
         team_name = cfg.my_team_name if is_mine else f"Team {slot}"
         on_clock = "[bold green]YOUR PICK[/bold green]" if is_mine else team_name
 
-        first_line = console.input(f"\n[Pick #{pick_number}] {on_clock} just took (or paste) > ")
-
-        # A real paste delivers every line to the terminal at once, so right
-        # after reading the first one, the rest are already sitting in
-        # stdin's buffer ready to read with no further waiting - that's the
-        # signal this was a paste, not something typed and Entered on
-        # purpose. Blank lines are legitimate paste content (ESPN's own
-        # copyable text is full of them), so this - not "stop at a blank
-        # line" - is what decides where the paste ends.
-        #
-        # A large (whole-page) paste can arrive to the tty in more than one
-        # chunk with a tiny gap between them, so a single "nothing buffered
-        # right now" check can fire in that gap and cut the paste short -
-        # confirmed live, it did, and the leftover tail then sat unread in
-        # the buffer and got consumed by the NEXT prompt instead (the
-        # confirmation below), silently flipping a typed "Y" into "no
-        # input read yet, whatever came next wins". A couple of short
-        # retries closes that gap.
-        lines = [first_line]
-        while True:
-            if _has_buffered_input():
-                lines.append(console.input(""))
-                continue
-            time.sleep(0.05)
-            if not _has_buffered_input():
-                break
-
-        if len(lines) > 1:
-            _review_and_apply_paste("\n".join(lines), pool, picks, drafted_ids, team_count, cfg, console)
-            console.input("Press Enter to continue...")
-            continue
-
-        query = first_line.strip()
+        query = console.input(f"\n[Pick #{pick_number}] {on_clock} just took > ").strip()
         if not query:
             continue
         if query.lower() in ("quit", "q", "exit"):
@@ -468,9 +411,16 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
             continue
 
         if query.lower() == "paste":
-            # Explicit fallback for non-tty/piped input, or if auto-detection
-            # above ever misses a paste - collect lines until an explicit
-            # sentinel, since a blank line can't be used as one here.
+            # Collect lines until an explicit "END" sentinel - not a blank
+            # line, since ESPN's own copyable text is full of blank lines.
+            # Deliberately doesn't try to auto-detect a paste by checking
+            # for buffered input: that was tried and removed - it can't
+            # tell apart "the kernel's tty buffer is empty" from "Python's
+            # own stdin buffering already slurped a big paste into a
+            # userspace buffer that select() can't see" - confirmed live,
+            # a large paste tripped exactly that, and a leftover unread
+            # tail got silently fed to the next prompt (the record
+            # confirmation) instead of the user's real keystroke.
             console.print(
                 "[bold]Paste now, then type END on its own line when done.[/bold]"
             )
