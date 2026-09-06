@@ -1,0 +1,3 @@
+# Only needed for scripts/capture_draft_traffic.py (one-off reconnaissance,
+# not part of the CLI). Not needed to run draft_picker itself.
+playwright>=1.47.0
