@@ -198,6 +198,93 @@ def _run_simulation(console: Console, cfg, league, pool, position_slot_counts, t
     console.print("\nSimulation ended.")
 
 
+def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count, roster_size, my_pick_numbers, positions, pool):
+    """Track a REAL live draft by hand-entering each pick as it happens.
+
+    ESPN's mDraftDetail endpoint doesn't reflect picks live even with
+    cache-busting (confirmed live, both the plain and cache-busted requests
+    still returned stale/placeholder data mid-draft) - so there's no working
+    API-based path to "who's been drafted" during an in-progress draft.
+    This sidesteps ESPN's draft endpoint entirely: real pool/projections/
+    settings (all fetched once, pre-draft, which does work), but pick data
+    comes from you watching the real draft screen and typing each pick in.
+    """
+    picks: List = []
+    drafted_ids = set()
+
+    console.print(
+        "\n[bold]Manual live tracking[/bold] - nothing is read from or sent to ESPN's draft "
+        "endpoint. Watch the real draft screen and enter each pick (yours and everyone "
+        "else's) as it happens.\n"
+        "At each prompt: type part of a player's name to record that pick, 'undo' to remove "
+        "the last entry (typo recovery), or 'quit' to stop.\n"
+    )
+
+    total_picks = roster_size * team_count
+    while len(picks) < total_picks:
+        available = [p for p in pool.values() if p.player_id not in drafted_ids]
+        ranked = rank_available_players(available, position_slot_counts, team_count)
+        needs = roster_needs(my_position_counts(picks, cfg.my_team_name, pool), position_slot_counts)
+
+        console.clear()
+        console.print(
+            Group(
+                render_header(console.width, picks, my_pick_numbers, needs),
+                render_top_table(ranked, cfg.top_n, needs),
+                render_position_table(ranked, positions, needs),
+                render_recent_picks(picks),
+                render_my_picks(picks, cfg.my_team_name),
+            )
+        )
+
+        pick_number = len(picks) + 1
+        slot = slot_for_pick_number(pick_number, team_count)
+        is_mine = slot == cfg.my_draft_position
+        team_name = cfg.my_team_name if is_mine else f"Team {slot}"
+        on_clock = "[bold green]YOUR PICK[/bold green]" if is_mine else team_name
+
+        query = console.input(f"\n[Pick #{pick_number}] {on_clock} just took > ").strip()
+        if query.lower() in ("quit", "q", "exit"):
+            break
+
+        if query.lower() == "undo":
+            if picks:
+                removed = picks.pop()
+                drafted_ids.discard(removed.player_id)
+                console.print(f"[yellow]Removed pick #{removed.pick_number}: {removed.player_name}[/yellow]")
+            else:
+                console.print("[yellow]Nothing to undo.[/yellow]")
+            console.input("Press Enter to continue...")
+            continue
+
+        matches = [p for p in available if query.lower() in p.name.lower()]
+        if not matches:
+            console.print(f"[red]No available player matches '{query}' - try again.[/red]")
+            console.input("Press Enter to continue...")
+            continue
+        if len(matches) > 1:
+            console.print(f"[yellow]Multiple matches for '{query}' - be more specific:[/yellow]")
+            for m in matches[:8]:
+                console.print(f"  {m.name} ({m.position}, {m.pro_team})")
+            console.input("Press Enter to continue...")
+            continue
+
+        chosen = matches[0]
+        drafted_ids.add(chosen.player_id)
+        picks.append(
+            espn_client.PickRow(
+                pick_number=pick_number,
+                round_num=(pick_number - 1) // team_count + 1,
+                round_pick=slot,
+                team_name=team_name,
+                player_name=chosen.name,
+                player_id=chosen.player_id,
+            )
+        )
+
+    console.print("\nManual tracking ended.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Live ESPN fantasy draft best-available assistant")
     parser.add_argument("--once", action="store_true", help="print a single snapshot and exit")
@@ -205,6 +292,15 @@ def main():
         "--simulate",
         action="store_true",
         help="rehearse with a local mock draft (real league settings/projections, fake picks - nothing is sent to ESPN)",
+    )
+    parser.add_argument(
+        "--manual",
+        action="store_true",
+        help=(
+            "track a REAL live draft by hand-entering each pick (real pool/projections, "
+            "no dependency on ESPN's draft endpoint - use this since live pick data via "
+            "the API doesn't work)"
+        ),
     )
     parser.add_argument(
         "--league-id",
@@ -267,6 +363,10 @@ def main():
 
     if args.simulate:
         _run_simulation(console, cfg, league, pool, position_slot_counts, team_count, roster_size, my_pick_numbers, positions)
+        return
+
+    if args.manual:
+        _run_manual_tracking(console, cfg, position_slot_counts, team_count, roster_size, my_pick_numbers, positions, pool)
         return
 
     def build_view():

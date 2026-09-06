@@ -30,9 +30,29 @@ Fill in `.env`:
 ```
 python -m draft_picker.cli          # live, refreshes every POLL_INTERVAL_SECONDS
 python -m draft_picker.cli --once   # single snapshot, no polling loop
+python -m draft_picker.cli --manual # hand-enter picks - see "Manual tracking" below
 ```
 
 Ctrl+C to stop.
+
+### Manual tracking (use this for your live draft)
+
+ESPN's `mDraftDetail` endpoint does not reflect picks live even with
+cache-busting - confirmed live, it still returned stale/placeholder
+(`playerId -1`) data mid-draft. There is currently no working API-based way
+to know "who's been drafted" during an in-progress draft, so `--manual`
+sidesteps it entirely: real player pool/projections/settings are still
+pulled from ESPN (that part works fine, it's a one-time pre-draft fetch),
+but you watch the real ESPN draft screen and type each pick in yourself as
+it happens - yours and everyone else's.
+
+```
+python -m draft_picker.cli --manual
+```
+
+At each prompt, type part of a player's name to record that pick, `undo` to
+remove the last entry (typo recovery), or `quit` to stop. Multiple name
+matches show a disambiguation list instead of silently guessing.
 
 ### Testing against a practice/mock draft
 
@@ -80,9 +100,9 @@ tunable heuristic, not solved optimization - adjust `FLEX_SHARE` /
   ESPN's own projections. Good enough for one draft night; swap in
   another source later if ESPN's projections annoy you mid-draft.
 - No "handcuff" or bye-week awareness.
-- Polling only (no live push) - ESPN's draft room has no public
-  websocket, so there's a `POLL_INTERVAL_SECONDS` gap (default 8s)
-  between a pick landing and it disappearing from the board here. Keep an
-  eye on the actual ESPN draft room too, don't draft off a stale screen.
+- No working live pick source via the API at all (not just a polling lag) -
+  `mDraftDetail` doesn't reflect picks mid-draft even with cache-busting.
+  Use `--manual` for a real draft; the plain polling mode's picks list will
+  stay stale/empty until ESPN marks the whole draft complete.
 - "On the clock" only tracks *your* turn precisely (from your fixed snake
   slot); it doesn't name which other team is picking right now.
