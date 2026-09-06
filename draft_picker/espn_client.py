@@ -57,9 +57,19 @@ def fetch_player_pool(league: League, size: int = 3000) -> Dict[int, PlayerRow]:
             position=p.position,
             pro_team=p.proTeam,
             projected_points=p.projected_total_points,
-            injury_status=p.injuryStatus,
+            injury_status=_normalize_injury_status(p.injuryStatus),
         )
     return pool
+
+
+def _normalize_injury_status(raw) -> str:
+    """espn_api's generic JSON parser sometimes returns a list here instead
+    of a string (e.g. for D/ST "players" where the field appears more than
+    once in ESPN's nested response) - confirmed live, crashed the CLI
+    ('list' isn't hashable as a dict key). Always return a plain string."""
+    if isinstance(raw, list):
+        return raw[0] if raw else ""
+    return raw or ""
 
 
 def _get_league_draft_uncached(league: League) -> dict:
