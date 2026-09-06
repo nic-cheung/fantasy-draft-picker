@@ -50,9 +50,14 @@ it happens - yours and everyone else's.
 python -m draft_picker.cli --manual
 ```
 
-At each prompt, type part of a player's name to record that pick, `undo` to
-remove the last entry (typo recovery), or `quit` to stop. Multiple name
-matches show a disambiguation list instead of silently guessing.
+At each prompt, type part of a player's name to record that pick, `paste` to
+enter several picks at once (paste multiple lines - a full copied Pick
+History row works fine, extra text is ignored - then an empty line to
+finish), `undo` to remove the last entry (typo recovery), or `quit` to stop.
+Multiple name matches show a disambiguation list instead of silently
+guessing. Paste picks oldest-first; if a line can't be matched unambiguously,
+paste stops right there and tells you which line, so pick numbering (and
+therefore team attribution) never drifts.
 
 ### Testing against a practice/mock draft
 

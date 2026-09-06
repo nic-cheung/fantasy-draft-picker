@@ -198,6 +198,18 @@ def _run_simulation(console: Console, cfg, league, pool, position_slot_counts, t
     console.print("\nSimulation ended.")
 
 
+def _find_matches(query: str, available) -> list:
+    """Bidirectional containment match: works for a short typed fragment
+    ("mccaffrey") AND a full noisy line copied straight out of ESPN's Pick
+    History panel ("Rd 3, Pick 6 - Team Bob - Christian McCaffrey RB SF"),
+    since in the second case the player's full name is a substring of the
+    query rather than the other way round."""
+    query = query.lower().strip()
+    if not query:
+        return []
+    return [p for p in available if query in p.name.lower() or p.name.lower() in query]
+
+
 def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count, roster_size, my_pick_numbers, positions, pool):
     """Track a REAL live draft by hand-entering each pick as it happens.
 
@@ -216,8 +228,9 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
         "\n[bold]Manual live tracking[/bold] - nothing is read from or sent to ESPN's draft "
         "endpoint. Watch the real draft screen and enter each pick (yours and everyone "
         "else's) as it happens.\n"
-        "At each prompt: type part of a player's name to record that pick, 'undo' to remove "
-        "the last entry (typo recovery), or 'quit' to stop.\n"
+        "At each prompt: type part of a player's name to record that pick, 'paste' to enter "
+        "several picks at once (e.g. copied from ESPN's Pick History panel, oldest pick "
+        "first), 'undo' to remove the last entry (typo recovery), or 'quit' to stop.\n"
     )
 
     total_picks = roster_size * team_count
@@ -257,7 +270,82 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
             console.input("Press Enter to continue...")
             continue
 
-        matches = [p for p in available if query.lower() in p.name.lower()]
+        if query.lower() == "paste":
+            console.print(
+                "[bold]Paste picks now, oldest pick first, one per line "
+                "(a full Pick History row is fine, extra text is ignored).[/bold]\n"
+                "Press Enter on an empty line when done."
+            )
+            pasted_lines = []
+            while True:
+                line = console.input("").strip()
+                if not line:
+                    break
+                pasted_lines.append(line)
+
+            applied = 0
+            for line in pasted_lines:
+                cur_available = [p for p in pool.values() if p.player_id not in drafted_ids]
+                line_lower = line.lower()
+
+                # Prefer a player whose FULL name literally appears in the line - the
+                # expected case for a noisy Pick History row. Only fall back to a short
+                # typed-fragment match (line is a substring of the name) when no full
+                # name is present, so a bare fragment like "Josh" matching two different
+                # full names (Allen vs Jacobs) is correctly flagged as ambiguous rather
+                # than silently resolved by name length.
+                name_in_line = [p for p in cur_available if p.name.lower() in line_lower]
+                if len(name_in_line) == 1:
+                    chosen = name_in_line[0]
+                elif len(name_in_line) > 1:
+                    # e.g. both "Michael Pittman" and "Michael Pittman Jr." appear in
+                    # the line - the longer (more specific) one wins if it's unique.
+                    name_in_line.sort(key=lambda p: len(p.name), reverse=True)
+                    tied = [c for c in name_in_line if len(c.name) == len(name_in_line[0].name)]
+                    if len(tied) > 1:
+                        console.print(f"[red]Stopped at line {applied + 1}: '{line}' matches multiple players:[/red]")
+                        for c in name_in_line[:8]:
+                            console.print(f"  {c.name} ({c.position}, {c.pro_team})")
+                        break
+                    chosen = name_in_line[0]
+                else:
+                    fragment_matches = [p for p in cur_available if line_lower and line_lower in p.name.lower()]
+                    if not fragment_matches:
+                        console.print(f"[red]Stopped at line {applied + 1}: no available player found in '{line}'.[/red]")
+                        break
+                    if len(fragment_matches) > 1:
+                        console.print(f"[red]Stopped at line {applied + 1}: '{line}' matches multiple players:[/red]")
+                        for c in fragment_matches[:8]:
+                            console.print(f"  {c.name} ({c.position}, {c.pro_team})")
+                        break
+                    chosen = fragment_matches[0]
+
+                cur_pick_number = len(picks) + 1
+                cur_slot = slot_for_pick_number(cur_pick_number, team_count)
+                cur_team_name = cfg.my_team_name if cur_slot == cfg.my_draft_position else f"Team {cur_slot}"
+                drafted_ids.add(chosen.player_id)
+                picks.append(
+                    espn_client.PickRow(
+                        pick_number=cur_pick_number,
+                        round_num=(cur_pick_number - 1) // team_count + 1,
+                        round_pick=cur_slot,
+                        team_name=cur_team_name,
+                        player_name=chosen.name,
+                        player_id=chosen.player_id,
+                    )
+                )
+                applied += 1
+
+            console.print(f"[green]Applied {applied}/{len(pasted_lines)} pasted picks.[/green]")
+            if applied < len(pasted_lines):
+                console.print(
+                    "[yellow]Fix the name above then re-paste starting from that line "
+                    "(pick numbering picks up correctly), or enter it one by one.[/yellow]"
+                )
+            console.input("Press Enter to continue...")
+            continue
+
+        matches = _find_matches(query, available)
         if not matches:
             console.print(f"[red]No available player matches '{query}' - try again.[/red]")
             console.input("Press Enter to continue...")
