@@ -55,11 +55,19 @@ just **paste directly** - no need to type anything first. A multi-line
 paste is auto-detected and treated as a batch. You can paste literally
 anything from the draft page: a Round table, the Picks sidebar, or the
 whole page at once - every line is scanned for a real player's full name
-and everything else (headers, stats, roster sidebar, autopick text) is
-ignored, so there's no assumption about ESPN's exact layout. `undo` removes
+and everything else (headers, stats, roster sidebar) is ignored, so
+there's no assumption about ESPN's exact layout. The "You are on the
+clock!" autopick suggestion is specifically filtered out too, since it
+names a real player who hasn't actually been picked yet. `undo` removes
 the last single entry, `quit` stops. (If pasting into a non-interactive
 terminal where auto-detection doesn't apply, type `paste`, paste your
 content, then `END` on its own line.)
+
+Before anything from a paste is written, it shows exactly which new picks
+it found - name, and which team each would be attributed to - and asks
+for confirmation. Nothing is recorded until you confirm, so a stray or
+misread line never silently corrupts the draft state; re-pasting the same
+or a growing block that finds nothing new skips the prompt entirely.
 
 It's safe - and expected - to paste the same or a growing block of the
 draft history repeatedly (e.g. "select-all the Pick History panel from

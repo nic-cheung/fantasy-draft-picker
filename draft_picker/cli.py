@@ -225,8 +225,10 @@ def _has_buffered_input() -> bool:
         return False
 
 
-def _apply_pasted_blob(text: str, pool, picks: list, drafted_ids: set, team_count: int, cfg, console: Console) -> None:
-    """Record picks from a raw paste of (part of) the ESPN draft page.
+def _plan_pasted_blob(text: str, pool, drafted_ids: set, console: Console) -> tuple:
+    """Scan a raw paste of (part of) the ESPN draft page and work out which
+    picks it would add, WITHOUT touching any draft state - see
+    _commit_planned_picks for why that separation exists.
 
     Deliberately doesn't assume any particular layout - a real copy of
     ESPN's Round table is one FIELD per line (pick number, blank injury
@@ -252,15 +254,18 @@ def _apply_pasted_blob(text: str, pool, picks: list, drafted_ids: set, team_coun
     a couple of lines either side of it, which covers both the bare name
     header right before it and the "Your autopick would be" line itself.
 
-    Matching against the FULL pool (not just available) and skipping any
-    hit that's already drafted makes this idempotent - pasting the whole
-    draft history again from pick 1 only adds what's new, so "periodically
+    Checking against a running copy of drafted_ids (not the real one, since
+    this doesn't mutate state) makes this idempotent - pasting the whole
+    draft history again from pick 1 only plans what's new, so "periodically
     paste everything from the top" works as a repeatable action rather
     than needing to track where the last paste left off. Duplicate rows of
     the same pick showing up more than once in one paste (e.g. a Round
     table row and a Picks-sidebar entry for the same pick) collapse the
-    same way, since the first occurrence marks it drafted before the
-    second is reached.
+    same way, since the first occurrence marks it seen before the second
+    is reached.
+
+    Returns (new_players, already_count, ignored_count, preview_skipped) -
+    new_players is the ordered list of PlayerRow this paste would add.
     """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
@@ -271,7 +276,8 @@ def _apply_pasted_blob(text: str, pool, picks: list, drafted_ids: set, team_coun
             preview_excluded.update(range(max(0, i - 2), min(len(lines), i + 3)))
 
     full_pool = list(pool.values())
-    new_count = 0
+    seen_ids = set(drafted_ids)
+    new_players = []
     already_count = 0
     ignored_count = 0
     preview_skipped = 0
@@ -296,10 +302,21 @@ def _apply_pasted_blob(text: str, pool, picks: list, drafted_ids: set, team_coun
                 continue
         chosen = hits[0]
 
-        if chosen.player_id in drafted_ids:
+        if chosen.player_id in seen_ids:
             already_count += 1
             continue
+        seen_ids.add(chosen.player_id)
+        new_players.append(chosen)
 
+    return new_players, already_count, ignored_count, preview_skipped
+
+
+def _commit_planned_picks(new_players: list, picks: list, drafted_ids: set, team_count: int, cfg) -> None:
+    """Actually record the picks a plan decided on. Split from planning so a
+    paste can be previewed - names, and which team each would attribute to -
+    before anything is written, rather than corrupting state the instant a
+    bad line slips through (as the on-the-clock autopick preview did)."""
+    for chosen in new_players:
         cur_pick_number = len(picks) + 1
         cur_slot = slot_for_pick_number(cur_pick_number, team_count)
         cur_team_name = cfg.my_team_name if cur_slot == cfg.my_draft_position else f"Team {cur_slot}"
@@ -314,13 +331,36 @@ def _apply_pasted_blob(text: str, pool, picks: list, drafted_ids: set, team_coun
                 player_id=chosen.player_id,
             )
         )
-        new_count += 1
 
-    console.print(
-        f"[green]{new_count} new pick(s) recorded[/green], {already_count} already known, "
-        f"{ignored_count} line(s) ignored (no player name found)"
-        f"{f', {preview_skipped} line(s) ignored (on-the-clock/autopick preview)' if preview_skipped else ''}."
+
+def _review_and_apply_paste(text: str, pool, picks: list, drafted_ids: set, team_count: int, cfg, console: Console) -> None:
+    """Plan a pasted blob, show exactly what it would add (with the pick
+    number and team each new player would be attributed to), and only
+    commit on explicit confirmation."""
+    new_players, already_count, ignored_count, preview_skipped = _plan_pasted_blob(text, pool, drafted_ids, console)
+
+    status = (
+        f"{already_count} already known, {ignored_count} line(s) ignored (no player name found)"
+        f"{f', {preview_skipped} line(s) ignored (on-the-clock/autopick preview)' if preview_skipped else ''}"
     )
+
+    if not new_players:
+        console.print(f"[green]Nothing new[/green] ({status}).")
+        return
+
+    console.print(f"[bold]This paste would record {len(new_players)} new pick(s)[/bold] ({status}):")
+    for i, p in enumerate(new_players, start=1):
+        preview_pick_number = len(picks) + i
+        preview_slot = slot_for_pick_number(preview_pick_number, team_count)
+        preview_team = cfg.my_team_name if preview_slot == cfg.my_draft_position else f"Team {preview_slot}"
+        console.print(f"  #{preview_pick_number} {preview_team}: {p.name} ({p.position}, {p.pro_team})")
+
+    confirm = console.input("Record these? [Y/n] ").strip().lower()
+    if confirm in ("", "y", "yes"):
+        _commit_planned_picks(new_players, picks, drafted_ids, team_count, cfg)
+        console.print(f"[green]{len(new_players)} pick(s) recorded.[/green]")
+    else:
+        console.print("[yellow]Cancelled - nothing recorded.[/yellow]")
 
 
 def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count, roster_size, my_pick_numbers, positions, pool):
@@ -385,7 +425,7 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
             lines.append(console.input(""))
 
         if len(lines) > 1:
-            _apply_pasted_blob("\n".join(lines), pool, picks, drafted_ids, team_count, cfg, console)
+            _review_and_apply_paste("\n".join(lines), pool, picks, drafted_ids, team_count, cfg, console)
             console.input("Press Enter to continue...")
             continue
 
@@ -418,7 +458,7 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
                 if line.strip().upper() == "END":
                     break
                 pasted_lines.append(line)
-            _apply_pasted_blob("\n".join(pasted_lines), pool, picks, drafted_ids, team_count, cfg, console)
+            _review_and_apply_paste("\n".join(pasted_lines), pool, picks, drafted_ids, team_count, cfg, console)
             console.input("Press Enter to continue...")
             continue
 
@@ -527,11 +567,17 @@ def main():
     positions = [p for p in ordered_positions if p in league_positions]
 
     if args.simulate:
-        _run_simulation(console, cfg, league, pool, position_slot_counts, team_count, roster_size, my_pick_numbers, positions)
+        try:
+            _run_simulation(console, cfg, league, pool, position_slot_counts, team_count, roster_size, my_pick_numbers, positions)
+        except KeyboardInterrupt:
+            console.print("\nStopped.")
         return
 
     if args.manual:
-        _run_manual_tracking(console, cfg, position_slot_counts, team_count, roster_size, my_pick_numbers, positions, pool)
+        try:
+            _run_manual_tracking(console, cfg, position_slot_counts, team_count, roster_size, my_pick_numbers, positions, pool)
+        except KeyboardInterrupt:
+            console.print("\nStopped.")
         return
 
     def build_view():
