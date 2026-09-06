@@ -34,6 +34,22 @@ python -m draft_picker.cli --once   # single snapshot, no polling loop
 
 Ctrl+C to stop.
 
+### Testing against a practice/mock draft
+
+ESPN's "practice draft" feature creates a real league object with its own
+league ID (visible in the URL, e.g.
+`.../draft?leagueId=1133703302&seasonId=2026&teamId=1&...`) - same API as
+a real league, so no code changes needed. Override the config for a single
+run instead of editing `.env` back and forth:
+
+```
+python -m draft_picker.cli --once --league-id 1133703302 --team-name "Team 1" --draft-position 1
+```
+
+`--year`, `--team-name`, and `--draft-position` are also available if the
+practice league's season/team/slot differ from your real one. Drop the
+flags entirely to fall back to whatever's in `.env` - i.e. your real draft.
+
 ## What it shows
 
 - **Draft status** - current pick number, and how many picks until you're on the clock (computed from your fixed snake slot).

@@ -186,10 +186,29 @@ def main():
         action="store_true",
         help="rehearse with a local mock draft (real league settings/projections, fake picks - nothing is sent to ESPN)",
     )
+    parser.add_argument(
+        "--league-id",
+        type=int,
+        default=None,
+        help="override ESPN_LEAGUE_ID from .env for this run only (e.g. to point at a practice/mock league)",
+    )
+    parser.add_argument("--year", type=int, default=None, help="override ESPN_YEAR for this run only")
+    parser.add_argument("--team-name", type=str, default=None, help="override MY_TEAM_NAME for this run only")
+    parser.add_argument(
+        "--draft-position", type=int, default=None, help="override MY_DRAFT_POSITION for this run only"
+    )
     args = parser.parse_args()
 
     console = Console()
     cfg = load_config()
+    if args.league_id is not None:
+        cfg.league_id = args.league_id
+    if args.year is not None:
+        cfg.year = args.year
+    if args.team_name is not None:
+        cfg.my_team_name = args.team_name
+    if args.draft_position is not None:
+        cfg.my_draft_position = args.draft_position
 
     console.print("Connecting to ESPN...")
     league = espn_client.connect(cfg)
