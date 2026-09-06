@@ -7,7 +7,21 @@ from espn_api.football import League
 
 from .config import Config
 
-RELEVANT_POSITIONS = {"QB", "RB", "WR", "TE", "D/ST"}
+BASE_POSITIONS = {"QB", "RB", "WR", "TE", "D/ST"}
+
+
+def relevant_positions(position_slot_counts: Dict[str, int]) -> Set[str]:
+    """Which positions this league actually drafts.
+
+    QB/RB/WR/TE/D/ST are always included. K is excluded unless the league
+    actually starts one - it was previously hardcoded off everywhere, which
+    was only correct by coincidence (the real league has K capped at 0
+    starters/0 max) and silently broke a league that does use a kicker.
+    """
+    positions = set(BASE_POSITIONS)
+    if position_slot_counts.get("K", 0) > 0:
+        positions.add("K")
+    return positions
 
 
 @dataclass
@@ -46,10 +60,11 @@ def fetch_player_pool(league: League, size: int = 3000) -> Dict[int, PlayerRow]:
     settings (half-PPR etc. are already baked in), so no manual scoring math
     is needed here - just VOR on top of it.
     """
+    positions = relevant_positions(league.settings.position_slot_counts)
     players = league.free_agents(size=size)
     pool: Dict[int, PlayerRow] = {}
     for p in players:
-        if p.position not in RELEVANT_POSITIONS:
+        if p.position not in positions:
             continue
         pool[p.playerId] = PlayerRow(
             player_id=p.playerId,

@@ -261,7 +261,9 @@ def main():
     console.print(f"Loaded {len(pool)} draftable players.")
 
     my_pick_numbers = snake_pick_numbers(cfg.my_draft_position, team_count, roster_size)
-    positions = ["QB", "RB", "WR", "TE", "D/ST"]
+    ordered_positions = ["QB", "RB", "WR", "TE", "D/ST", "K"]
+    league_positions = espn_client.relevant_positions(position_slot_counts)
+    positions = [p for p in ordered_positions if p in league_positions]
 
     if args.simulate:
         _run_simulation(console, cfg, league, pool, position_slot_counts, team_count, roster_size, my_pick_numbers, positions)

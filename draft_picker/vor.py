@@ -43,6 +43,7 @@ def effective_starters_per_team(position_slot_counts: Dict[str, int]) -> Dict[st
         "WR": position_slot_counts.get("WR", 0),
         "TE": position_slot_counts.get("TE", 0),
         "D/ST": position_slot_counts.get("D/ST", 0),
+        "K": position_slot_counts.get("K", 0),
     }
     flex_count = position_slot_counts.get("FLEX", 0) + position_slot_counts.get("RB/WR/TE", 0)
     rb_wr_count = position_slot_counts.get("RB/WR", 0)
