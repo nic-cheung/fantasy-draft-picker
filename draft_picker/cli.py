@@ -272,8 +272,10 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
 
         if query.lower() == "paste":
             console.print(
-                "[bold]Paste picks now, oldest pick first, one per line "
-                "(a full Pick History row is fine, extra text is ignored).[/bold]\n"
+                "[bold]Paste the draft history now, oldest pick first, one per line "
+                "(a full Pick History row is fine, extra text is ignored). Pasting the "
+                "whole history again later is fine too - already-recorded picks are "
+                "skipped automatically.[/bold]\n"
                 "Press Enter on an empty line when done."
             )
             pasted_lines = []
@@ -283,18 +285,24 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
                     break
                 pasted_lines.append(line)
 
-            applied = 0
+            full_pool = list(pool.values())
+            new_count = 0
+            already_count = 0
             for line in pasted_lines:
-                cur_available = [p for p in pool.values() if p.player_id not in drafted_ids]
                 line_lower = line.lower()
 
+                # Match against the FULL pool (drafted or not) - the same block gets
+                # re-pasted from pick 1 every time, so a line for an already-recorded
+                # pick must still resolve (to be recognized and skipped), not fail just
+                # because that player's no longer "available".
+                #
                 # Prefer a player whose FULL name literally appears in the line - the
                 # expected case for a noisy Pick History row. Only fall back to a short
                 # typed-fragment match (line is a substring of the name) when no full
                 # name is present, so a bare fragment like "Josh" matching two different
                 # full names (Allen vs Jacobs) is correctly flagged as ambiguous rather
                 # than silently resolved by name length.
-                name_in_line = [p for p in cur_available if p.name.lower() in line_lower]
+                name_in_line = [p for p in full_pool if p.name.lower() in line_lower]
                 if len(name_in_line) == 1:
                     chosen = name_in_line[0]
                 elif len(name_in_line) > 1:
@@ -303,22 +311,26 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
                     name_in_line.sort(key=lambda p: len(p.name), reverse=True)
                     tied = [c for c in name_in_line if len(c.name) == len(name_in_line[0].name)]
                     if len(tied) > 1:
-                        console.print(f"[red]Stopped at line {applied + 1}: '{line}' matches multiple players:[/red]")
+                        console.print(f"[red]Stopped at line {new_count + already_count + 1}: '{line}' matches multiple players:[/red]")
                         for c in name_in_line[:8]:
                             console.print(f"  {c.name} ({c.position}, {c.pro_team})")
                         break
                     chosen = name_in_line[0]
                 else:
-                    fragment_matches = [p for p in cur_available if line_lower and line_lower in p.name.lower()]
+                    fragment_matches = [p for p in full_pool if line_lower and line_lower in p.name.lower()]
                     if not fragment_matches:
-                        console.print(f"[red]Stopped at line {applied + 1}: no available player found in '{line}'.[/red]")
+                        console.print(f"[red]Stopped at line {new_count + already_count + 1}: no player found in '{line}'.[/red]")
                         break
                     if len(fragment_matches) > 1:
-                        console.print(f"[red]Stopped at line {applied + 1}: '{line}' matches multiple players:[/red]")
+                        console.print(f"[red]Stopped at line {new_count + already_count + 1}: '{line}' matches multiple players:[/red]")
                         for c in fragment_matches[:8]:
                             console.print(f"  {c.name} ({c.position}, {c.pro_team})")
                         break
                     chosen = fragment_matches[0]
+
+                if chosen.player_id in drafted_ids:
+                    already_count += 1
+                    continue
 
                 cur_pick_number = len(picks) + 1
                 cur_slot = slot_for_pick_number(cur_pick_number, team_count)
@@ -334,13 +346,18 @@ def _run_manual_tracking(console: Console, cfg, position_slot_counts, team_count
                         player_id=chosen.player_id,
                     )
                 )
-                applied += 1
+                new_count += 1
 
-            console.print(f"[green]Applied {applied}/{len(pasted_lines)} pasted picks.[/green]")
-            if applied < len(pasted_lines):
+            unresolved = len(pasted_lines) - new_count - already_count
+            console.print(
+                f"[green]{new_count} new pick(s) recorded[/green]"
+                f"{f', {already_count} already recorded (skipped)' if already_count else ''}"
+                f"{f', stopped with {unresolved} line(s) unprocessed' if unresolved else ''}."
+            )
+            if unresolved:
                 console.print(
-                    "[yellow]Fix the name above then re-paste starting from that line "
-                    "(pick numbering picks up correctly), or enter it one by one.[/yellow]"
+                    "[yellow]Fix the name above then re-paste (the whole history is fine, "
+                    "or just the remainder) - pick numbering picks up correctly either way.[/yellow]"
                 )
             console.input("Press Enter to continue...")
             continue
