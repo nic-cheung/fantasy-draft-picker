@@ -1,6 +1,8 @@
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Set
 
+import requests
 from espn_api.football import League
 
 from .config import Config
@@ -60,6 +62,23 @@ def fetch_player_pool(league: League, size: int = 3000) -> Dict[int, PlayerRow]:
     return pool
 
 
+def _get_league_draft_uncached(league: League) -> dict:
+    """Fetches the draft view with cache-busting - bypasses espn_api's
+    get_league_draft(), which sends a plain GET with no cache-prevention
+    headers or unique query param. That's exactly the kind of request a
+    caching layer between us and ESPN (a corporate proxy, a CDN) can serve
+    stale from cache indefinitely - confirmed live: real picks visible on
+    ESPN's own draft screen still came back as unpicked (playerId -1)
+    several minutes later through the plain request.
+    """
+    endpoint = league.espn_request.LEAGUE_ENDPOINT
+    params = {"view": "mDraftDetail", "_": str(int(time.time() * 1000))}
+    headers = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
+    response = requests.get(endpoint, params=params, headers=headers, cookies=league.espn_request.cookies)
+    response.raise_for_status()
+    return response.json()
+
+
 def refresh_draft_picks(league: League) -> List[PickRow]:
     """Re-fetches the draft log directly from ESPN's raw response.
 
@@ -71,7 +90,7 @@ def refresh_draft_picks(league: League) -> List[PickRow]:
     parse the raw picks list ourselves: every pick slot already exists in
     the response with playerId -1 as a placeholder before it's made.
     """
-    data = league.espn_request.get_league_draft()
+    data = _get_league_draft_uncached(league)
     raw_picks = data.get("draftDetail", {}).get("picks", [])
 
     picks: List[PickRow] = []
