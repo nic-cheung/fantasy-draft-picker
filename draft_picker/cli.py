@@ -1,7 +1,9 @@
 import argparse
+import sys
 import time
 from typing import List
 
+from espn_api.requests.espn_requests import ESPNAccessDenied, ESPNInvalidLeague, ESPNUnknownError
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
@@ -210,8 +212,27 @@ def main():
     if args.draft_position is not None:
         cfg.my_draft_position = args.draft_position
 
-    console.print("Connecting to ESPN...")
-    league = espn_client.connect(cfg)
+    console.print(f"Connecting to ESPN league {cfg.league_id} ({cfg.year})...")
+    try:
+        league = espn_client.connect(cfg)
+    except ESPNInvalidLeague:
+        console.print(
+            f"[red]League {cfg.league_id} does not exist for {cfg.year}.[/red] "
+            "Double check the league ID (and --year if you overrode it) - practice/mock "
+            "draft URLs in particular often use an ID that isn't a real, queryable league."
+        )
+        sys.exit(1)
+    except ESPNAccessDenied:
+        console.print(
+            f"[red]League {cfg.league_id} exists but can't be accessed with these credentials.[/red] "
+            "Either it's private and your SWID/espn_s2 don't grant access to it (they need to belong "
+            "to an account that's a member of that league), or the cookies have expired - re-grab them "
+            "from your browser."
+        )
+        sys.exit(1)
+    except ESPNUnknownError as e:
+        console.print(f"[red]ESPN returned an unexpected error connecting to league {cfg.league_id}:[/red] {e}")
+        sys.exit(1)
 
     position_slot_counts = league.settings.position_slot_counts
     team_count = league.settings.team_count
