@@ -1,7 +1,8 @@
 import argparse
 import sys
 import time
-from typing import List
+from collections import Counter
+from typing import Dict, List
 
 from espn_api.requests.espn_requests import ESPNAccessDenied, ESPNInvalidLeague, ESPNUnknownError
 from rich.console import Console, Group
@@ -11,7 +12,7 @@ from rich.table import Table
 
 from . import espn_client
 from .config import load_config
-from .vor import RankedPlayer, rank_available_players
+from .vor import RankedPlayer, rank_available_players, roster_needs
 
 INJURY_FLAG = {"OUT": "OUT", "DOUBTFUL": "D", "QUESTIONABLE": "Q", "SUSPENSION": "SUSP"}
 
@@ -35,7 +36,16 @@ def slot_for_pick_number(pick_number: int, team_count: int) -> int:
     return team_count - position_in_round + 1
 
 
-def render_header(console_width: int, picks, my_pick_numbers: List[int]) -> Panel:
+def my_position_counts(picks, my_team_name: str, pool) -> Counter:
+    counts = Counter()
+    for p in espn_client.my_picks(picks, my_team_name):
+        player = pool.get(p.player_id)
+        if player:
+            counts[player.position] += 1
+    return counts
+
+
+def render_header(console_width: int, picks, my_pick_numbers: List[int], needs: Dict[str, int]) -> Panel:
     next_pick_number = len(picks) + 1
     upcoming = [n for n in my_pick_numbers if n >= next_pick_number]
     if not upcoming:
@@ -47,11 +57,14 @@ def render_header(console_width: int, picks, my_pick_numbers: List[int]) -> Pane
         else:
             turn_text = f"{gap} pick(s) until your turn (pick #{upcoming[0]})"
 
-    text = f"Pick #{next_pick_number} on the clock  |  {turn_text}"
+    still_needed = [f"{pos}×{count}" for pos, count in needs.items() if count > 0]
+    needs_text = "Still need: " + ", ".join(still_needed) if still_needed else "Starting lineup needs: all filled"
+
+    text = f"Pick #{next_pick_number} on the clock  |  {turn_text}\n{needs_text}"
     return Panel(text, title="Draft Status")
 
 
-def render_top_table(ranked: List[RankedPlayer], top_n: int) -> Table:
+def render_top_table(ranked: List[RankedPlayer], top_n: int, needs: Dict[str, int]) -> Table:
     table = Table(title=f"Best Available (Top {top_n} by VOR)")
     table.add_column("#", justify="right")
     table.add_column("Player")
@@ -59,10 +72,12 @@ def render_top_table(ranked: List[RankedPlayer], top_n: int) -> Table:
     table.add_column("Team")
     table.add_column("Proj Pts", justify="right")
     table.add_column("VOR", justify="right")
+    table.add_column("Need")
     table.add_column("Injury")
 
     for i, r in enumerate(ranked[:top_n], start=1):
         injury = INJURY_FLAG.get(r.player.injury_status, "")
+        need = "[green]NEED[/green]" if needs.get(r.player.position, 0) > 0 else ""
         table.add_row(
             str(i),
             r.player.name,
@@ -70,12 +85,13 @@ def render_top_table(ranked: List[RankedPlayer], top_n: int) -> Table:
             r.player.pro_team,
             f"{r.player.projected_points:.1f}",
             f"{r.vor:+.1f}",
+            need,
             f"[red]{injury}[/red]" if injury else "",
         )
     return table
 
 
-def render_position_table(ranked: List[RankedPlayer], positions: List[str], per_pos: int = 5) -> Table:
+def render_position_table(ranked: List[RankedPlayer], positions: List[str], needs: Dict[str, int], per_pos: int = 5) -> Table:
     table = Table(title="Best Available by Position")
     table.add_column("Pos")
     table.add_column("Player")
@@ -84,9 +100,10 @@ def render_position_table(ranked: List[RankedPlayer], positions: List[str], per_
 
     for pos in positions:
         pos_players = [r for r in ranked if r.player.position == pos][:per_pos]
+        pos_label = f"{pos} [green](need)[/green]" if needs.get(pos, 0) > 0 else pos
         for j, r in enumerate(pos_players):
             table.add_row(
-                pos if j == 0 else "",
+                pos_label if j == 0 else "",
                 r.player.name,
                 f"{r.player.projected_points:.1f}",
                 f"{r.vor:+.1f}",
@@ -136,12 +153,13 @@ def _run_simulation(console: Console, cfg, league, pool, position_slot_counts, t
     while len(sim_picks) < total_picks:
         available = [p for p in pool.values() if p.player_id not in drafted_ids]
         ranked = rank_available_players(available, position_slot_counts, team_count)
+        needs = roster_needs(my_position_counts(sim_picks, cfg.my_team_name, pool), position_slot_counts)
 
         console.print(
             Group(
-                render_header(console.width, sim_picks, my_pick_numbers),
-                render_top_table(ranked, cfg.top_n),
-                render_position_table(ranked, positions),
+                render_header(console.width, sim_picks, my_pick_numbers, needs),
+                render_top_table(ranked, cfg.top_n, needs),
+                render_position_table(ranked, positions, needs),
                 render_recent_picks(sim_picks),
                 render_my_picks(sim_picks, cfg.my_team_name),
             )
@@ -254,11 +272,12 @@ def main():
         drafted = espn_client.drafted_player_ids(picks)
         available = [p for p in pool.values() if p.player_id not in drafted]
         ranked = rank_available_players(available, position_slot_counts, team_count)
+        needs = roster_needs(my_position_counts(picks, cfg.my_team_name, pool), position_slot_counts)
 
         return Group(
-            render_header(console.width, picks, my_pick_numbers),
-            render_top_table(ranked, cfg.top_n),
-            render_position_table(ranked, positions),
+            render_header(console.width, picks, my_pick_numbers, needs),
+            render_top_table(ranked, cfg.top_n, needs),
+            render_position_table(ranked, positions, needs),
             render_recent_picks(picks),
             render_my_picks(picks, cfg.my_team_name),
         )
@@ -269,9 +288,21 @@ def main():
 
     try:
         with Live(build_view(), console=console, refresh_per_second=1, screen=False) as live:
+            consecutive_failures = 0
             while True:
                 time.sleep(cfg.poll_interval_seconds)
-                live.update(build_view())
+                try:
+                    new_view = build_view()
+                    consecutive_failures = 0
+                    live.update(new_view)
+                except Exception as e:
+                    # A single dropped ESPN request shouldn't kill the tool
+                    # mid-draft - log it and keep polling instead of dying.
+                    consecutive_failures += 1
+                    live.console.print(
+                        f"[yellow]Poll failed ({consecutive_failures}x in a row): {e} - "
+                        f"retrying in {cfg.poll_interval_seconds}s[/yellow]"
+                    )
     except KeyboardInterrupt:
         console.print("\nStopped.")
 
