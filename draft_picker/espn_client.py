@@ -61,26 +61,36 @@ def fetch_player_pool(league: League, size: int = 3000) -> Dict[int, PlayerRow]:
 
 
 def refresh_draft_picks(league: League) -> List[PickRow]:
-    """Re-fetches the draft log.
+    """Re-fetches the draft log directly from ESPN's raw response.
 
-    league.draft is append-only in espn_api (refresh_draft doesn't clear it),
-    so we reset it ourselves before refetching to avoid piling up duplicates.
+    espn_api's own League.refresh_draft()/_fetch_draft() only populates
+    league.draft once draftDetail['drafted'] is True - and ESPN doesn't set
+    that until the ENTIRE draft is complete, not when it starts (confirmed
+    live: 'drafted': False, 'inProgress': True, mid-draft). That makes the
+    library's built-in draft tracking useless during a live draft, so we
+    parse the raw picks list ourselves: every pick slot already exists in
+    the response with playerId -1 as a placeholder before it's made.
     """
-    league.draft = []
-    league.refresh_draft()
+    data = league.espn_request.get_league_draft()
+    raw_picks = data.get("draftDetail", {}).get("picks", [])
 
     picks: List[PickRow] = []
-    for i, pick in enumerate(league.draft, start=1):
+    for pick in raw_picks:
+        player_id = pick.get("playerId", -1)
+        if not player_id or player_id <= 0:
+            continue
+        team = league.get_team_data(pick.get("teamId"))
         picks.append(
             PickRow(
-                pick_number=i,
-                round_num=pick.round_num,
-                round_pick=pick.round_pick,
-                team_name=pick.team.team_name if pick.team else "Unknown",
-                player_name=pick.playerName,
-                player_id=pick.playerId,
+                pick_number=pick.get("overallPickNumber"),
+                round_num=pick.get("roundId"),
+                round_pick=pick.get("roundPickNumber"),
+                team_name=team.team_name if team else "Unknown",
+                player_name=league.player_map.get(player_id, f"Player {player_id}"),
+                player_id=player_id,
             )
         )
+    picks.sort(key=lambda p: p.pick_number)
     return picks
 
 
