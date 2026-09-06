@@ -237,8 +237,20 @@ def _apply_pasted_blob(text: str, pool, picks: list, drafted_ids: set, team_coun
     So instead of parsing structure, every line is scanned for a real
     player's full name - true whether that name sits alone on its own line
     (the Round table) or inline ("Josh Allen / BUF QB" in the Picks
-    sidebar). Everything else (headers, stats, roster sidebar, autopick
-    text) is just ignored rather than treated as an error.
+    sidebar). Everything else (headers, stats, roster sidebar) is just
+    ignored rather than treated as an error.
+
+    One exception that needs active filtering rather than just falling
+    through as a non-match: the "You are on the clock!" widget previews
+    the CURRENT pick's likely autopick selection by name ("Puka Nacua" /
+    "Your autopick would be: Puka Nacua / Los Angeles Rams WR") - that's a
+    suggestion, not a completed pick, but it names a real, undrafted
+    player just like a genuine pick would, so naive scanning would record
+    it as one (confirmed live - it did, and silently shifted every pick
+    number, and therefore every team attribution, after it by one). Any
+    line mentioning "on the clock" or "autopick" gets excluded along with
+    a couple of lines either side of it, which covers both the bare name
+    header right before it and the "Your autopick would be" line itself.
 
     Matching against the FULL pool (not just available) and skipping any
     hit that's already drafted makes this idempotent - pasting the whole
@@ -251,12 +263,23 @@ def _apply_pasted_blob(text: str, pool, picks: list, drafted_ids: set, team_coun
     second is reached.
     """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+    preview_excluded = set()
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        if "on the clock" in line_lower or "autopick" in line_lower:
+            preview_excluded.update(range(max(0, i - 2), min(len(lines), i + 3)))
+
     full_pool = list(pool.values())
     new_count = 0
     already_count = 0
     ignored_count = 0
+    preview_skipped = 0
 
-    for line in lines:
+    for idx, line in enumerate(lines):
+        if idx in preview_excluded:
+            preview_skipped += 1
+            continue
         line_lower = line.lower()
         hits = [p for p in full_pool if p.name.lower() in line_lower]
         if not hits:
@@ -295,7 +318,8 @@ def _apply_pasted_blob(text: str, pool, picks: list, drafted_ids: set, team_coun
 
     console.print(
         f"[green]{new_count} new pick(s) recorded[/green], {already_count} already known, "
-        f"{ignored_count} line(s) ignored (no player name found)."
+        f"{ignored_count} line(s) ignored (no player name found)"
+        f"{f', {preview_skipped} line(s) ignored (on-the-clock/autopick preview)' if preview_skipped else ''}."
     )
 
 
